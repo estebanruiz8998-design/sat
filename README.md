@@ -13,7 +13,17 @@ python3 -m http.server 8000
 # → http://localhost:8000
 ```
 
-Works as-is on GitHub Pages, Netlify, Vercel, or any static host.
+## Deploy it
+
+There is no build step — the repo root *is* the site, and `vercel.json`
+pins that (no build command, output directory `.`).
+
+- **Vercel:** dashboard → Add New → Project → import this repository →
+  Deploy. No settings to change.
+- **GitHub Pages:** repo Settings → Pages → Source: *Deploy from a
+  branch* → pick this branch, folder `/ (root)`.
+- **Netlify / Cloudflare Pages / any static host:** publish directory `.`,
+  no build command.
 
 ## Pages
 

@@ -86,6 +86,35 @@ if (rw1Url && rw2Url && mathUrl && codeUrl) {
   console.log("  (skipping app.html rewrite — bank/code URLs not provided yet)");
 }
 
+/* JSON-escaped companions (*.esc): line i is the JSON string encoding
+   of source line i, ending in a literal backslash-n. Concatenating all
+   .esc lines (no separators) yields the exact JSON string body for the
+   whole file — verified here by a round-trip parse. */
+const escDirs = ["rw1", "rw2", "math", "code", "main"];
+for (const d of escDirs) {
+  const dir = path.join(outDir, d);
+  if (!fs.existsSync(dir)) continue;
+  const walkEsc = p => fs.readdirSync(p, { withFileTypes: true }).forEach(e => {
+    const fp = path.join(p, e.name);
+    if (e.isDirectory()) return walkEsc(fp);
+    if (fp.endsWith(".esc")) return;
+    const content = fs.readFileSync(fp, "utf8");
+    const lines = content.split("\n");
+    // content ends with \n → last element is "", which naturally drops the trailing escape
+    const escLines = lines.map((l, i) => {
+      const body = JSON.stringify(l).slice(1, -1);
+      return i < lines.length - 1 ? body + "\\n" : body;
+    }).filter((l, i, a) => !(i === a.length - 1 && l === ""));
+    const joined = escLines.join("");
+    if (JSON.parse('"' + joined + '"') !== content) {
+      console.error("ESC ROUND-TRIP FAILED for " + fp); process.exit(1);
+    }
+    fs.writeFileSync(fp + ".esc", escLines.join("\n") + "\n");
+  });
+  walkEsc(dir);
+}
+console.log("escaped companions written and round-trip verified");
+
 /* checksums for post-deploy verification */
 const crypto = require("crypto");
 const sums = [];
