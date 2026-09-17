@@ -142,6 +142,24 @@ const Tutor = (() => {
         "Given sin(A) = 5/13? Draw it. The missing side is one Pythagorean step away."
     },
     {
+      keys: ["fill-in", "fill in", "spr", "grid-in", "grid in", "student-produced", "no choices"],
+      reply:
+        "Fill-in (student-produced response) questions — about 1 in 4 Math questions. Entry rules that cost real points:\n\n" +
+        "• Up to 5 characters (6 if negative). Digits, one decimal point OR one slash.\n" +
+        "• Mixed numbers must be improper fractions or decimals: 3½ → 7/2 or 3.5. Typing '31/2' reads as thirty-one halves!\n" +
+        "• Long decimals must FILL the space: for 2/3, enter 2/3, .6666, or .6667 — .67 is wrong.\n" +
+        "• No symbols, units, %, $, or π. A percent answer of 50% is just 50.\n" +
+        "• Fractions don't need reducing, and negatives are allowed.\n\n" +
+        "Practice them here in Math sets and mock exams — the entry box enforces the real rules."
+    },
+    {
+      keys: ["review queue", "spaced", "repetition", "why is this question back", "queue"],
+      reply:
+        "The review queue is spaced repetition — the most evidence-backed study technique there is.\n\n" +
+        "When you miss a question, it comes back about 2 days later. Get it right and the gap stretches (the optimal gap is roughly 10-20% of the time until your test — the app computes that for you). Three spaced successes and it graduates.\n\n" +
+        "Why it works: recalling something just as you're about to forget it is what makes memory stick. Clearing the queue when it's due is the highest-value 10 minutes of your day."
+    },
+    {
       keys: ["timing", "pacing", "time management", "run out of time", "slow"],
       reply:
         "Pacing rules I coach everyone on:\n\n" +

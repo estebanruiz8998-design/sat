@@ -491,7 +491,7 @@ const QUESTIONS = [
     stem: "If 2^(x+3) = 64, what is the value of x?",
     choices: ["3", "5", "6", "2"],
     answer: 0,
-    explanation: "64 = 2⁶, so x + 3 = 6 and x = 3.",
+    explanation: "Rewrite 64 as a power of 2: 64 = 2⁶. With matching bases, the exponents must be equal, so x + 3 = 6, which gives x = 3.",
     hints: [
       "Rewrite 64 as a power of 2.",
       "64 = 2⁶. Now the bases match.",
