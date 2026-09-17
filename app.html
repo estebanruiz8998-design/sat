@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Summit SAT — Your Prep Home</title>
+<meta name="description" content="Your personalized Digital SAT prep dashboard: adaptive practice, mock exams, study plan, tutor, and analytics.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div class="app-shell">
+
+  <aside class="sidebar">
+    <a class="logo" href="index.html"><span class="logo-mark">▲</span> <span class="lbl">Summit</span></a>
+    <nav id="side-nav">
+      <button class="side-link" data-view="dashboard"><span class="ico">🏠</span><span class="lbl">Home</span></button>
+      <button class="side-link" data-view="practice"><span class="ico">🧠</span><span class="lbl">Practice</span></button>
+      <button class="side-link" data-view="exam"><span class="ico">📝</span><span class="lbl">Mock Exam</span></button>
+      <button class="side-link" data-view="modules"><span class="ico">📚</span><span class="lbl">Modules</span></button>
+      <button class="side-link" data-view="plan"><span class="ico">🗓️</span><span class="lbl">Study Plan</span></button>
+      <button class="side-link" data-view="tutor"><span class="ico">🦉</span><span class="lbl">Tutor</span></button>
+      <button class="side-link" data-view="analytics"><span class="ico">📈</span><span class="lbl">Analytics</span></button>
+      <button class="side-link" data-view="settings"><span class="ico">⚙️</span><span class="lbl">Settings</span></button>
+    </nav>
+    <div class="side-footer">
+      <div id="side-streak">🔥 0-day streak</div>
+      <div id="side-xp">⭐ 0 XP · Lv 0</div>
+    </div>
+  </aside>
+
+  <main class="app-main" id="main">
+    <!-- views are rendered here by js/app.js -->
+  </main>
+
+</div>
+
+<div id="toast"></div>
+
+<script src="js/questions.js"></script>
+<script src="js/tutor.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
