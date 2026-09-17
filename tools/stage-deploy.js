@@ -61,7 +61,7 @@ w(path.join(outDir, "main", "js", "bank-core.js"), bankCore);
 w(path.join(outDir, "main", "js", "bank-index.js"), bankIndex);
 w(path.join(outDir, "main", "css", "style.css"), fs.readFileSync(path.join(ROOT, "css", "style.css"), "utf8"));
 
-for (const page of ["index.html", "plans.html"]) {
+for (const page of ["index.html"]) {
   w(path.join(outDir, "main", page), fs.readFileSync(path.join(ROOT, page), "utf8"));
 }
 

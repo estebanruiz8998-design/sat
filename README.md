@@ -29,9 +29,10 @@ pins that (no build command, output directory `.`).
 
 | File | What it is |
 |---|---|
-| `index.html` | Marketing landing page |
-| `plans.html` | Pricing page (everything is free in this build) |
+| `index.html` | Landing page (features, method, official resources, FAQ) |
 | `app.html` | The full prep application |
+
+Every feature is available with no accounts, tiers, or gating of any kind.
 
 ## The prep engine (what's inside)
 
