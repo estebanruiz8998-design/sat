@@ -58,6 +58,11 @@ Every feature is available with no accounts, tiers, or gating of any kind.
 - Unlimited history: each report is kept, charted on the score trend (official results as diamonds, Summit mocks as circles), with change-since-first and best-score tracking
 - Official results outrank in-app data everywhere: they take over your predicted score, and their questions count double when computing weak domains and rebuilding your study plan
 
+**Video learning links**
+- A topic-specific ▶ Watch link on every one of the 23 skills, plus broader topics (Desmos, pacing, the adaptive format, fill-ins)
+- Surfaced where they help: in Modules, in the feedback after a missed question, in the tutor's topic lessons, and in the Guide
+- Links are YouTube *search* URLs rather than fixed video IDs, deliberately — they cannot 404 or go stale, and always surface current explainers. `js/videos.js` has a slot for specific hand-picked videos if you want to curate your own
+
 **Coaching & content**
 - Professor Peak: progressive per-question hints, topic lessons on every tested skill, "explain my last miss" step-by-step reviews, data-driven practice advice
 - 8 learning modules with strategy playbooks and per-skill mastery tracking
@@ -84,9 +89,9 @@ All state (progress, plans, chat, streaks, review queue) lives in `localStorage`
 
 ## Tech
 
-Vanilla HTML/CSS/JS. One stylesheet, three scripts (`questions.js`, `tutor.js`, `app.js`), one validator. PDF text extraction uses the browser's native `DecompressionStream` — no libraries, no network.
+Vanilla HTML/CSS/JS. One stylesheet, four scripts (`questions.js`, `videos.js`, `tutor.js`, `app.js`), one validator. PDF text extraction uses the browser's native `DecompressionStream` — no libraries, no network.
 
-Verified by an end-to-end Playwright suite (89 assertions) covering onboarding, the Bluebook report parser across five input formats, the full import/preview/save/delete flow, practice, interleaving, the review queue, cause tagging, hints, tutor chat, quick and full-length adaptive exams with navigation/flags/eliminator/break screen, the exam review screen, guide, modules, analytics, theming, and persistence.
+Verified by an end-to-end Playwright suite (98 assertions) covering onboarding, the Bluebook report parser across five input formats, the full import/preview/save/delete flow, practice, interleaving, the review queue, cause tagging, hints, tutor chat, quick and full-length adaptive exams with navigation/flags/eliminator/break screen, the exam review screen, guide, modules, analytics, theming, and persistence.
 
 ---
 
