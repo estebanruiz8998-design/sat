@@ -35,23 +35,45 @@ const domains = payload.domains || [];
 
 const dropped = [];
 const WATCH_RE = /^https:\/\/(?:www\.)?youtube\.com\/watch\?v=[A-Za-z0-9_-]{11}(?:&[\w=%.-]*)?$/;
-const CHANNEL_RE = /^https:\/\/(?:www\.)?youtube\.com\/(?:@[A-Za-z0-9._-]+|c\/[A-Za-z0-9._-]+|channel\/UC[A-Za-z0-9_-]{22}|user\/[A-Za-z0-9._-]+)\/?$/;
+const CHANNEL_RE = /^https:\/\/(?:www\.)?youtube\.com\/(?:@[A-Za-z0-9._-]+|c\/[A-Za-z0-9._-]+|channel\/UC[A-Za-z0-9_-]{22}|user\/[A-Za-z0-9._-]+)$/;
+const MAX_PICKS_PER_SKILL = 2;
 
 function cleanText(s, max = 120) {
   return String(s || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
+// same channel reaches us as /@chan, /@chan/, /@chan/videos, /channel/UC...
+function normalizeChannelUrl(raw) {
+  return String(raw || "").trim()
+    .replace(/\?.*$/, "")
+    .replace(/\/(videos|featured|about|playlists|shorts)\/?$/i, "")
+    .replace(/\/+$/, "");
+}
+const nameKey = s => cleanText(s, 60).toLowerCase().replace(/[^a-z0-9]/g, "");
 
-/* ---- channels (deduped by normalized URL) ---- */
+/* ---- channels: dedupe by channel NAME, preferring the @handle URL ---- */
 const channelMap = new Map();
 for (const d of domains) {
   for (const c of d.channels || []) {
-    // normalize query string and trailing slash so /@chan and /@chan/ dedupe
-    const url = String(c.url || "").trim().replace(/\?.*$/, "").replace(/\/+$/, "");
+    const url = normalizeChannelUrl(c.url);
     if (!CHANNEL_RE.test(url)) { dropped.push(`channel URL rejected: ${c.name} → ${c.url}`); continue; }
     if (!c.name || !c.why) { dropped.push(`channel missing name/why: ${c.url}`); continue; }
-    const key = url.toLowerCase();
-    if (!channelMap.has(key)) channelMap.set(key, { name: cleanText(c.name, 60), url, why: cleanText(c.why, 110) });
+    const key = nameKey(c.name);
+    const entry = { name: cleanText(c.name, 60), url, why: cleanText(c.why, 110) };
+    const existing = channelMap.get(key);
+    if (!existing) { channelMap.set(key, entry); continue; }
+    // same channel seen again: keep the friendlier @handle form
+    if (!existing.url.includes("/@") && url.includes("/@")) channelMap.set(key, entry);
+    else dropped.push(`duplicate channel "${c.name}": ${url}`);
   }
+}
+
+/* second pass: the same channel can arrive under two different names
+   (e.g. "Penguin SAT Prep" and "Penguin Test Prep"), so collapse by URL */
+const byUrl = new Map();
+for (const [key, entry] of channelMap) {
+  const u = entry.url.toLowerCase();
+  if (byUrl.has(u)) { dropped.push(`same channel URL under another name: "${entry.name}" → ${entry.url}`); channelMap.delete(key); }
+  else byUrl.set(u, key);
 }
 
 /* ---- per-skill queries + picks ---- */
@@ -75,11 +97,16 @@ for (const d of domains) {
       skillOut[key].query = cleanText(s.searchQuery, 140);
     }
     for (const v of s.videos || []) {
+      if (skillOut[key].picks.length >= MAX_PICKS_PER_SKILL) { dropped.push(`over pick limit for ${key}: ${v.title}`); continue; }
       const url = String(v.url || "").trim();
       if (!WATCH_RE.test(url)) { dropped.push(`video URL rejected: ${v.title} → ${v.url}`); continue; }
       const id = url.split("v=")[1].slice(0, 11);
       if (seenVideo.has(id)) { dropped.push(`duplicate video id ${id}: ${v.title}`); continue; }
       if (!v.title || !v.channel) { dropped.push(`video missing title/channel: ${url}`); continue; }
+      // a pick whose channel the researcher could not identify is too weak to ship
+      if (/unverified|did not appear|unknown/i.test(v.channel)) {
+        dropped.push(`unidentified channel, pick dropped: ${v.title}`); continue;
+      }
       seenVideo.add(id);
       skillOut[key].picks.push({
         title: cleanText(v.title, 90),
