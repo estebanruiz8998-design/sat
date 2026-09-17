@@ -26,6 +26,7 @@ const DEFAULT_STATE = () => ({
   chat: [],                    // {who:"user"|"bot", text}
   reviewQueue: [],             // {qid, due, interval, successes}
   prefs: { timing: "soft" },   // practice timing: "untimed" | "soft"
+  official: [],                // imported Bluebook/College Board score reports
 });
 
 let S = loadState();
@@ -154,19 +155,62 @@ function sectionAccuracy(section) {
   return seen ? correct / seen : null;
 }
 
+/* A real College Board score is the best estimate available, so it wins
+   whenever it is at least as recent as the newest Summit mock. */
 function predictedScore() {
-  if (S.exams.length) return S.exams[S.exams.length - 1].total;
+  const off = latestOfficial();
+  const lastExam = S.exams.length ? S.exams[S.exams.length - 1] : null;
+  if (off && off.total !== null && (!lastExam || off.ts >= lastExam.ts)) return off.total;
+  if (lastExam) return lastExam.total;
+  if (off && off.total !== null) return off.total;
   const rw = sectionAccuracy("rw"), m = sectionAccuracy("math");
   if (rw === null && m === null) return null;
   const est = a => a === null ? 500 : Math.round((200 + 600 * a) / 10) * 10;
   return est(rw) + est(m);
 }
+function predictionSource() {
+  const off = latestOfficial();
+  const lastExam = S.exams.length ? S.exams[S.exams.length - 1] : null;
+  if (off && off.total !== null && (!lastExam || off.ts >= lastExam.ts)) return "official";
+  if (lastExam) return "mock";
+  if (off && off.total !== null) return "official";
+  return S.attempts.length ? "practice" : null;
+}
+
+/* Domain accuracy merging Summit practice with imported official
+   results. Official questions carry extra weight: they are the real
+   test, so they should steer the plan more than in-app practice. */
+const OFFICIAL_WEIGHT = 2;
+function combinedDomainStats() {
+  const per = {};
+  const own = statsByDomain();
+  ALL_DOMAINS.forEach(d => {
+    const o = own[d.id] || { seen: 0, correct: 0 };
+    per[d.id] = { seen: o.seen, correct: o.correct, officialSeen: 0, officialCorrect: 0 };
+  });
+  Object.entries(officialDomainStats()).forEach(([d, v]) => {
+    if (!per[d]) per[d] = { seen: 0, correct: 0, officialSeen: 0, officialCorrect: 0 };
+    per[d].officialSeen += v.seen;
+    per[d].officialCorrect += v.correct;
+  });
+  Object.values(per).forEach(p => {
+    p.weightedSeen = p.seen + p.officialSeen * OFFICIAL_WEIGHT;
+    p.weightedCorrect = p.correct + p.officialCorrect * OFFICIAL_WEIGHT;
+    p.acc = p.weightedSeen ? p.weightedCorrect / p.weightedSeen : null;
+    p.totalSeen = p.seen + p.officialSeen;
+  });
+  return per;
+}
 
 function weakestDomains(n = 2) {
-  const per = statsByDomain();
+  const per = combinedDomainStats();
   const rows = ALL_DOMAINS.map(d => {
-    const s = per[d.id] || { seen: 0, correct: 0 };
-    return { id: d.id, name: d.name, icon: d.icon, seen: s.seen, acc: s.seen ? s.correct / s.seen : 0.5 };
+    const s = per[d.id] || {};
+    return {
+      id: d.id, name: d.name, icon: d.icon,
+      seen: s.totalSeen || 0,
+      acc: s.acc === null || s.acc === undefined ? 0.5 : s.acc,
+    };
   });
   rows.sort((a, b) => (a.acc - b.acc) || (a.seen - b.seen));
   return rows.slice(0, n);
@@ -174,6 +218,400 @@ function weakestDomains(n = 2) {
 
 function bankCount(section) { return QUESTIONS.filter(q => q.section === section).length; }
 function fullExamAvailable() { return bankCount("rw") >= 54 && bankCount("math") >= 44; }
+
+/* ============================================================
+   OFFICIAL SCORE REPORTS (Bluebook / College Board imports)
+   Real results outrank Summit's own mocks everywhere: score
+   prediction, weakest-domain detection, and the study plan.
+   ============================================================ */
+
+/* College Board's published knowledge-and-skills taxonomy mapped onto
+   Summit's 8 domains. Keys are normalized (lowercase, punctuation
+   stripped) before lookup. */
+const OFFICIAL_SKILL_MAP = {
+  // Reading and Writing · Information and Ideas
+  "central ideas and details": { domain: "info", skill: "Central Ideas" },
+  "command of evidence": { domain: "info", skill: "Evidence & Support" },
+  "command of evidence textual": { domain: "info", skill: "Evidence & Support" },
+  "command of evidence quantitative": { domain: "info", skill: "Evidence & Support" },
+  "inferences": { domain: "info", skill: "Inferences" },
+  // Reading and Writing · Craft and Structure
+  "words in context": { domain: "craft", skill: "Words in Context" },
+  "text structure and purpose": { domain: "craft", skill: "Text Structure & Purpose" },
+  "cross text connections": { domain: "craft", skill: "Cross-Text Connections" },
+  // Reading and Writing · Expression of Ideas
+  "rhetorical synthesis": { domain: "expr", skill: "Rhetorical Synthesis" },
+  "transitions": { domain: "expr", skill: "Transitions" },
+  // Reading and Writing · Standard English Conventions
+  "boundaries": { domain: "conv", skill: "Punctuation & Boundaries" },
+  "form structure and sense": { domain: "conv", skill: "Verb Forms & Pronouns" },
+  // Math · Algebra
+  "linear equations in one variable": { domain: "alg", skill: "Linear Equations" },
+  "linear equations in two variables": { domain: "alg", skill: "Linear Functions & Graphs" },
+  "linear functions": { domain: "alg", skill: "Linear Functions & Graphs" },
+  "systems of two linear equations in two variables": { domain: "alg", skill: "Systems of Equations" },
+  "linear inequalities in one or two variables": { domain: "alg", skill: "Linear Equations" },
+  // Math · Advanced Math
+  "equivalent expressions": { domain: "adv", skill: "Exponents & Radicals" },
+  "nonlinear equations in one variable and systems of equations in two variables": { domain: "adv", skill: "Quadratics" },
+  "nonlinear functions": { domain: "adv", skill: "Nonlinear Functions" },
+  // Math · Problem-Solving and Data Analysis
+  "ratios rates proportional relationships and units": { domain: "data", skill: "Ratios & Percentages" },
+  "percentages": { domain: "data", skill: "Ratios & Percentages" },
+  "one variable data distributions and measures of center and spread": { domain: "data", skill: "Statistics & Probability" },
+  "two variable data models and scatterplots": { domain: "data", skill: "Data Interpretation" },
+  "probability and conditional probability": { domain: "data", skill: "Statistics & Probability" },
+  "inference from sample statistics and margin of error": { domain: "data", skill: "Statistics & Probability" },
+  "evaluating statistical claims observational studies and experiments": { domain: "data", skill: "Statistics & Probability" },
+  // Math · Geometry and Trigonometry
+  "area and volume": { domain: "geo", skill: "Circles & Area" },
+  "lines angles and triangles": { domain: "geo", skill: "Angles & Triangles" },
+  "right triangles and trigonometry": { domain: "geo", skill: "Right-Triangle Trig" },
+  "circles": { domain: "geo", skill: "Circles & Area" },
+};
+
+// keyword fallbacks, checked in order when no taxonomy entry matches
+const SKILL_KEYWORDS = [
+  [/right triangle|trigonom|sohcahtoa/, { domain: "geo", skill: "Right-Triangle Trig" }],
+  [/circle|area|volume|perimeter/, { domain: "geo", skill: "Circles & Area" }],
+  [/angle|triangle|polygon|parallel lines/, { domain: "geo", skill: "Angles & Triangles" }],
+  [/probab|statistic|margin of error|distribution|center and spread|mean|median/, { domain: "data", skill: "Statistics & Probability" }],
+  [/percent|ratio|rate|proportion|unit/, { domain: "data", skill: "Ratios & Percentages" }],
+  [/scatterplot|two variable data|graph interpretation|table/, { domain: "data", skill: "Data Interpretation" }],
+  [/quadratic|nonlinear equation/, { domain: "adv", skill: "Quadratics" }],
+  [/exponent|radical|equivalent expression|polynomial/, { domain: "adv", skill: "Exponents & Radicals" }],
+  [/nonlinear function|exponential function/, { domain: "adv", skill: "Nonlinear Functions" }],
+  [/system of|systems of/, { domain: "alg", skill: "Systems of Equations" }],
+  [/linear function|two variables|slope|intercept/, { domain: "alg", skill: "Linear Functions & Graphs" }],
+  [/linear|inequalit/, { domain: "alg", skill: "Linear Equations" }],
+  [/transition/, { domain: "expr", skill: "Transitions" }],
+  [/rhetorical|synthesis|notes/, { domain: "expr", skill: "Rhetorical Synthesis" }],
+  [/boundar|punctuation|comma|semicolon/, { domain: "conv", skill: "Punctuation & Boundaries" }],
+  [/form structure|subject verb|agreement|verb|pronoun|conventions/, { domain: "conv", skill: "Verb Forms & Pronouns" }],
+  [/words in context|vocabul|word choice/, { domain: "craft", skill: "Words in Context" }],
+  [/cross text|two texts|paired/, { domain: "craft", skill: "Cross-Text Connections" }],
+  [/structure|purpose/, { domain: "craft", skill: "Text Structure & Purpose" }],
+  [/evidence|support/, { domain: "info", skill: "Evidence & Support" }],
+  [/inference|logically completes/, { domain: "info", skill: "Inferences" }],
+  [/central idea|main idea|detail|summar/, { domain: "info", skill: "Central Ideas" }],
+];
+
+function normalizeSkillText(s) {
+  return String(s || "").toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+/* Fuzzy matching is deliberately conservative: answer letters and other
+   short cells ("B", "A") must never be mistaken for a skill name just
+   because they appear inside one. Exact taxonomy hits always win. */
+function matchOfficialSkill(raw) {
+  const n = normalizeSkillText(raw);
+  if (!n || !/[a-z]/.test(n)) return null;
+  if (OFFICIAL_SKILL_MAP[n]) return OFFICIAL_SKILL_MAP[n];
+  if (n.length < 5) return null;
+  for (const key of Object.keys(OFFICIAL_SKILL_MAP)) {
+    if (n.includes(key)) return OFFICIAL_SKILL_MAP[key];          // cell contains a full skill name
+    if (n.length >= 8 && key.includes(n)) return OFFICIAL_SKILL_MAP[key]; // cell is a long partial of one
+  }
+  for (const [re, val] of SKILL_KEYWORDS) if (re.test(n)) return val;
+  return null;
+}
+
+/* ---- parsing ----
+   Bluebook score reports reach us in many shapes: copied text from the
+   score-details page, an exported CSV, or extracted PDF text. The parser
+   is deliberately tolerant — it scans for scores anywhere, then collects
+   question rows in whichever of the common layouts it finds. Whatever it
+   produces is shown for confirmation before anything is saved. */
+
+function findLabeledScore(text, labelPattern, min, max) {
+  const re = new RegExp(labelPattern + "[^0-9]{0,40}(\\d{3,4})", "i");
+  const m = text.match(re);
+  if (!m) return null;
+  const v = +m[1];
+  return v >= min && v <= max ? v : null;
+}
+
+function parseScoreReport(text) {
+  const raw = String(text || "");
+  const clean = raw.replace(/\r/g, "");
+  const out = {
+    label: null, date: null, total: null, rw: null, math: null,
+    rows: [], warnings: [],
+  };
+
+  // ---- JSON (our own export) ----
+  const trimmed = clean.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const j = JSON.parse(trimmed);
+      const arr = Array.isArray(j) ? j : (j.official || [j]);
+      const first = arr[0];
+      if (first && (first.total || first.rw || first.math)) {
+        out.label = first.label || null;
+        out.date = first.date || null;
+        out.total = first.total ?? null;
+        out.rw = first.rw ?? null;
+        out.math = first.math ?? null;
+        (first.rows || []).forEach(r => out.rows.push(normalizeRow(r)));
+        out._multi = arr.length > 1 ? arr : null;
+        return finishParse(out);
+      }
+    } catch (e) { /* not our JSON — fall through to text parsing */ }
+  }
+
+  // ---- scores ----
+  out.rw = findLabeledScore(clean, "reading\\s*(?:and|&)?\\s*writing(?:\\s*score)?", 200, 800);
+  out.math = findLabeledScore(clean, "math(?:ematics)?(?:\\s*score)?", 200, 800);
+  out.total = findLabeledScore(clean, "total\\s*score", 400, 1600)
+    ?? findLabeledScore(clean, "your\\s*score", 400, 1600);
+  if (out.total === null && out.rw !== null && out.math !== null) out.total = out.rw + out.math;
+  if (out.total !== null && out.rw !== null && out.math === null) out.math = out.total - out.rw;
+  if (out.total !== null && out.math !== null && out.rw === null) out.rw = out.total - out.math;
+  if (out.total === null) {
+    // last resort: a lone 400-1600 multiple of 10 in the text
+    const m = clean.match(/\b(\d{3,4})\b/g) || [];
+    const cand = m.map(Number).filter(v => v >= 400 && v <= 1600 && v % 10 === 0);
+    if (cand.length === 1) out.total = cand[0];
+  }
+
+  // ---- label / test name ----
+  const nameM = clean.match(/practice\s*test\s*#?\s*(\d+)/i);
+  if (nameM) out.label = `Bluebook Practice Test ${nameM[1]}`;
+  else if (/\bpsat\b/i.test(clean)) out.label = "Official PSAT/NMSQT";
+  else if (/\bsat\b/i.test(clean)) out.label = "Official SAT";
+
+  // ---- date ----
+  const dm = clean.match(/\b(\d{4})-(\d{2})-(\d{2})\b/)
+    || clean.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/)
+    || clean.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2}),?\s+(\d{4})\b/i);
+  if (dm) {
+    const d = new Date(dm[0]);
+    if (!isNaN(d)) out.date = todayKey(d);
+  }
+
+  // ---- question rows ----
+  parseDelimitedRows(clean, out);
+  if (!out.rows.length) parseKeyValueRows(clean, out);
+  if (!out.rows.length) parseLooseRows(clean, out);
+
+  return finishParse(out);
+}
+
+function normalizeRow(r) {
+  const skillRaw = r.skillRaw || r.skill || r.knowledge || "";
+  const hit = matchOfficialSkill(skillRaw);
+  const status = String(r.status || "").toLowerCase();
+  return {
+    n: r.n ?? null,
+    skillRaw: String(skillRaw).trim(),
+    domain: r.domain || (hit ? hit.domain : null),
+    skill: r.skill && DOMAIN_BY_ID[r.domain || ""] ? r.skill : (hit ? hit.skill : null),
+    difficulty: r.difficulty || null,
+    correct: typeof r.correct === "boolean" ? r.correct : /^(correct|right|y|yes|true|1)$/.test(status),
+    omitted: typeof r.omitted === "boolean" ? r.omitted : /omit|blank|skipped|unanswered/.test(status),
+  };
+}
+
+const CORRECT_RE = /^(correct|right|y|yes|true|1|✓)$/i;
+const INCORRECT_RE = /^(incorrect|wrong|n|no|false|0|✗|x)$/i;
+const OMIT_RE = /^(omitted|omit|blank|skipped|unanswered|-|—)$/i;
+const DIFF_RE = /^(easy|medium|hard)$/i;
+
+function splitCells(line) {
+  if (line.includes("\t")) return line.split("\t").map(s => s.trim());
+  if (line.includes(",") && (line.match(/,/g) || []).length >= 2) {
+    // naive CSV split that respects quoted cells
+    const cells = []; let cur = "", q = false;
+    for (const ch of line) {
+      if (ch === '"') q = !q;
+      else if (ch === "," && !q) { cells.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+    cells.push(cur.trim());
+    return cells;
+  }
+  if (/\s{2,}/.test(line)) return line.split(/\s{2,}/).map(s => s.trim());
+  return null;
+}
+
+// tabular layouts: CSV, TSV, or column-aligned text
+function parseDelimitedRows(text, out) {
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const cells = splitCells(line);
+    if (!cells || cells.length < 2) continue;
+    if (cells.some(c => /^(question|q#|item)$/i.test(c)) && cells.some(c => /skill|knowledge/i.test(c))) continue; // header
+    let n = null, status = null, difficulty = null, skillRaw = null;
+    for (const c of cells) {
+      if (n === null && /^#?\d{1,3}$/.test(c)) { n = +c.replace("#", ""); continue; }
+      if (status === null && (CORRECT_RE.test(c) || INCORRECT_RE.test(c) || OMIT_RE.test(c))) { status = c; continue; }
+      if (difficulty === null && DIFF_RE.test(c)) { difficulty = c; continue; }
+      if (!skillRaw && matchOfficialSkill(c)) skillRaw = c;
+    }
+    if (status !== null && skillRaw) {
+      out.rows.push(buildRow(n, skillRaw, difficulty, status));
+    }
+  }
+}
+
+// "Your Answer: B" / "Correct Answer: B" / "Skill: Transitions" blocks
+function parseKeyValueRows(text, out) {
+  const lines = text.split("\n").map(l => l.trim());
+  let cur = null;
+  const normAns = s => String(s || "").trim().toLowerCase().replace(/[^a-z0-9./-]/g, "");
+  const flush = () => {
+    if (cur && cur.skillRaw) {
+      if (cur.status !== null) {
+        out.rows.push(buildRow(cur.n, cur.skillRaw, cur.difficulty, cur.status));
+      } else if (cur.your !== null || cur.key !== null) {
+        // no explicit verdict — derive it from the answer pair
+        const yours = normAns(cur.your);
+        const omitted = !yours || OMIT_RE.test(String(cur.your).trim());
+        const row = buildRow(cur.n, cur.skillRaw, cur.difficulty,
+          omitted ? "omitted" : (yours === normAns(cur.key) ? "correct" : "incorrect"));
+        out.rows.push(row);
+      }
+    }
+    cur = null;
+  };
+  for (const line of lines) {
+    const qm = line.match(/^question\s*#?\s*(\d{1,3})\b/i);
+    if (qm) { flush(); cur = { n: +qm[1], skillRaw: null, difficulty: null, status: null, your: null, key: null }; continue; }
+    if (!cur) continue;
+    let m;
+    if ((m = line.match(/^(?:your\s*answer|your\s*response)\s*[:\-]\s*(.+)$/i))) { cur.your = m[1].trim(); continue; }
+    if ((m = line.match(/^correct\s*answer\s*[:\-]\s*(.+)$/i))) { cur.key = m[1].trim(); continue; }
+    if ((m = line.match(/^(?:difficulty)\s*[:\-]\s*(.+)$/i))) { cur.difficulty = m[1].trim(); continue; }
+    if ((m = line.match(/^(?:skill|knowledge[^:]*|category)\s*[:\-]\s*(.+)$/i))) { cur.skillRaw = m[1].trim(); continue; }
+    if (DIFF_RE.test(line)) { cur.difficulty = line; continue; }
+    if (CORRECT_RE.test(line) || INCORRECT_RE.test(line) || OMIT_RE.test(line)) { cur.status = line; continue; }
+    if (!cur.skillRaw && matchOfficialSkill(line)) { cur.skillRaw = line; continue; }
+  }
+  flush();
+}
+
+// fallback: a skill name on one line, a verdict nearby
+function parseLooseRows(text, out) {
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    if (!matchOfficialSkill(lines[i])) continue;
+    if (normalizeSkillText(lines[i]).length < 4) continue;
+    let status = null;
+    for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 2); j++) {
+      if (CORRECT_RE.test(lines[j]) || INCORRECT_RE.test(lines[j]) || OMIT_RE.test(lines[j])) { status = lines[j]; break; }
+    }
+    if (status !== null) out.rows.push(buildRow(null, lines[i], null, status));
+  }
+}
+
+function buildRow(n, skillRaw, difficulty, status) {
+  const hit = matchOfficialSkill(skillRaw);
+  return {
+    n: n ?? null,
+    skillRaw: String(skillRaw || "").trim(),
+    domain: hit ? hit.domain : null,
+    skill: hit ? hit.skill : null,
+    difficulty: difficulty ? String(difficulty).toLowerCase() : null,
+    correct: CORRECT_RE.test(status),
+    omitted: OMIT_RE.test(status),
+  };
+}
+
+function finishParse(out) {
+  // de-duplicate by question number when numbering is present
+  const seen = new Set();
+  out.rows = out.rows.filter(r => {
+    if (r.n === null) return true;
+    const k = r.n + "|" + r.skillRaw;
+    if (seen.has(k)) return false;
+    seen.add(k); return true;
+  });
+  out.perDomain = {};
+  let unmapped = 0;
+  out.rows.forEach(r => {
+    if (!r.domain) { unmapped++; return; }
+    out.perDomain[r.domain] = out.perDomain[r.domain] || { seen: 0, correct: 0 };
+    out.perDomain[r.domain].seen++;
+    if (r.correct) out.perDomain[r.domain].correct++;
+  });
+  if (unmapped) out.warnings.push(`${unmapped} question${unmapped === 1 ? "" : "s"} had a skill label we couldn't match to a domain — they're counted in totals but not in the per-domain breakdown.`);
+  if (!out.rows.length) out.warnings.push("No question-by-question rows were found, so only the section scores will be used. That still improves your score prediction; paste the full score details for per-skill analysis.");
+  if (out.total === null && out.rw === null && out.math === null) out.warnings.push("No scores were detected. Check the preview below and fill them in by hand.");
+  return out;
+}
+
+/* ---- PDF text extraction (best effort, fully offline) ----
+   Bluebook reports download as PDF. We pull text out of Flate-compressed
+   content streams using the browser's native DecompressionStream. If it
+   yields nothing usable, the UI tells the user to paste instead. */
+async function inflatePdfStream(u8) {
+  const ds = new DecompressionStream("deflate");
+  const buf = await new Response(new Blob([u8]).stream().pipeThrough(ds)).arrayBuffer();
+  return new TextDecoder("latin1").decode(buf);
+}
+function pdfUnescape(s) {
+  return s.replace(/\\(n|r|t|b|f|\(|\)|\\|[0-7]{1,3})/g, (m, g) => {
+    switch (g) {
+      case "n": return "\n"; case "r": return "\r"; case "t": return "\t";
+      case "b": return "\b"; case "f": return "\f";
+      case "(": return "("; case ")": return ")"; case "\\": return "\\";
+      default: return String.fromCharCode(parseInt(g, 8));
+    }
+  });
+}
+function textFromContentStream(s) {
+  let out = "";
+  const tokenRe = /\((?:\\[\s\S]|[^\\()])*\)|T\*|Td|TD|ET|Tj|TJ/g;
+  let m;
+  while ((m = tokenRe.exec(s))) {
+    const t = m[0];
+    if (t.charAt(0) === "(") out += pdfUnescape(t.slice(1, -1));
+    else if (t === "Td" || t === "TD" || t === "T*" || t === "ET") out += "\n";
+  }
+  return out;
+}
+async function extractPdfText(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const latin = new TextDecoder("latin1").decode(bytes);
+  const parts = [];
+  const re = /stream\r?\n/g;
+  let m;
+  while ((m = re.exec(latin))) {
+    const start = m.index + m[0].length;
+    const end = latin.indexOf("endstream", start);
+    if (end === -1) break;
+    const dictStart = latin.lastIndexOf("<<", m.index);
+    const dict = dictStart === -1 ? "" : latin.slice(dictStart, m.index);
+    const rawSeg = bytes.subarray(start, end);
+    let content = null;
+    if (/FlateDecode/.test(dict)) {
+      try { content = await inflatePdfStream(rawSeg); } catch (e) { content = null; }
+    } else if (!/\/Image|DCTDecode|JPXDecode/.test(dict)) {
+      content = new TextDecoder("latin1").decode(rawSeg);
+    }
+    if (content && /\(|Tj|TJ/.test(content)) parts.push(textFromContentStream(content));
+    re.lastIndex = end;
+  }
+  return parts.join("\n");
+}
+
+/* ---- official stats feeding the rest of the app ---- */
+function officialDomainStats() {
+  const per = {};
+  (S.official || []).forEach(rep => {
+    Object.entries(rep.perDomain || {}).forEach(([d, v]) => {
+      per[d] = per[d] || { seen: 0, correct: 0 };
+      per[d].seen += v.seen; per[d].correct += v.correct;
+    });
+  });
+  return per;
+}
+function latestOfficial() {
+  const list = (S.official || []).slice().sort((a, b) => a.ts - b.ts);
+  return list.length ? list[list.length - 1] : null;
+}
 
 /* ---------------- spaced review queue ----------------
    Gap research (Cepeda et al. 2008): optimal review gap is roughly
@@ -268,8 +706,9 @@ function show(view, arg) {
   const views = {
     dashboard: renderDashboard, practice: renderPracticeSetup, exam: renderExamIntro,
     modules: renderModules, plan: renderPlan, tutor: renderTutor, guide: renderGuide,
-    analytics: renderAnalytics, settings: renderSettings,
+    official: renderOfficial, analytics: renderAnalytics, settings: renderSettings,
   };
+  if (view !== "official") pendingImport = null;
   (views[view] || renderDashboard)(arg);
 }
 document.querySelectorAll(".side-link").forEach(b =>
@@ -347,14 +786,17 @@ function renderDashboard() {
     return { d, seen: s.seen, acc: s.seen ? s.correct / s.seen : null };
   });
 
-  const diagCta = S.exams.length ? "" : `
+  const diagCta = (S.exams.length || (S.official || []).length) ? "" : `
     <div class="card" style="border-color:var(--brand);background:var(--brand-soft)">
       <div class="spread">
         <div>
-          <h3>🩺 Start with your diagnostic</h3>
-          <p class="small muted">A timed adaptive mock pinpoints your score and weak spots. Everything else calibrates from it.</p>
+          <h3>🩺 Set your baseline</h3>
+          <p class="small muted">Take a timed adaptive mock, or import a real Bluebook score report if you already have one — official results are the most accurate baseline. Everything else calibrates from this.</p>
         </div>
-        <button class="btn btn-primary" id="go-diag">Take the diagnostic →</button>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="go-diag">Take the diagnostic →</button>
+          <button class="btn btn-ghost" id="go-import">🏛️ Import official</button>
+        </div>
       </div>
     </div>`;
 
@@ -388,7 +830,7 @@ function renderDashboard() {
     <div class="tiles">
       <div class="tile brand"><div class="t-label">Predicted score</div>
         <div class="t-value">${pred ?? "—"}</div>
-        <div class="t-note">${pred ? (pred >= S.profile.targetScore ? "🎉 at/above target!" : `${S.profile.targetScore - pred} to target`) : "take the diagnostic"}</div></div>
+        <div class="t-note">${pred ? `${predictionSource() === "official" ? "🏛️ official · " : ""}${pred >= S.profile.targetScore ? "🎉 at/above target!" : `${S.profile.targetScore - pred} to target`}` : "take the diagnostic"}</div></div>
       <div class="tile amber"><div class="t-label">Streak</div>
         <div class="t-value">${streakCount()} 🔥</div>
         <div class="t-note">25-40 min/day beats weekend marathons</div></div>
@@ -429,6 +871,7 @@ function renderDashboard() {
     </div>`;
 
   $("#go-diag")?.addEventListener("click", () => show("exam"));
+  $("#go-import")?.addEventListener("click", () => show("official"));
   $("#go-guide")?.addEventListener("click", () => show("guide"));
   $("#go-plan")?.addEventListener("click", () => show("plan"));
   $("#qa-review")?.addEventListener("click", () => startPractice({ review: true }));
@@ -1040,6 +1483,16 @@ function renderExamIntro() {
       </div>
     </div>
 
+    <div class="card mt" style="border-color:var(--accent)">
+      <div class="spread">
+        <div>
+          <h3>🏛️ Already took a real Bluebook test?</h3>
+          <p class="small muted" style="max-width:52ch">Import the official score report instead of — or alongside — a Summit mock. Real College Board results are the most accurate baseline there is, so they take over your score prediction, weak-spot detection, and study plan. Import as many as you want to track progress over time.</p>
+        </div>
+        <button class="btn btn-accent" id="ex-import">Import a report →</button>
+      </div>
+    </div>
+
     <div class="card mt">
       <h3>Exam-mode rules (like test day)</h3>
       <div class="task"><span>🚫</span><span class="t-text">No hints, no instant feedback — full review comes after scoring</span></div>
@@ -1048,6 +1501,7 @@ function renderExamIntro() {
       <div class="task"><span>⏱️</span><span class="t-text">Timer per module. Never leave blanks — there's no wrong-answer penalty</span></div>
       ${S.exams.length ? `<p class="small muted center mt">Last score: <b>${S.exams[S.exams.length - 1].total}</b> (${S.exams[S.exams.length - 1].kind}) on ${new Date(S.exams[S.exams.length - 1].ts).toLocaleDateString()} · <a href="#" id="ex-last-review">review it</a></p>` : ""}
     </div>`;
+  $("#ex-import").addEventListener("click", () => show("official"));
   $("#ex-quick").addEventListener("click", () => startExam("quick"));
   $("#ex-full")?.addEventListener("click", () => startExam("full"));
   $("#ex-last-review")?.addEventListener("click", (e) => { e.preventDefault(); renderExamReview(S.exams.length - 1); });
@@ -1738,15 +2192,306 @@ function renderGuide() {
 }
 
 /* ============================================================
+   OFFICIAL SCORES — import Bluebook reports, unlimited history
+   ============================================================ */
+let pendingImport = null;
+
+function saveOfficialReport(rep) {
+  const ts = rep.date ? new Date(rep.date + "T12:00:00").getTime() : Date.now();
+  S.official.push({
+    id: "off_" + ts + "_" + Math.floor(Math.random() * 1e6),
+    ts, date: rep.date || todayKey(),
+    label: rep.label || "Official score report",
+    total: rep.total ?? null, rw: rep.rw ?? null, math: rep.math ?? null,
+    rows: rep.rows || [], perDomain: rep.perDomain || {},
+  });
+  S.official.sort((a, b) => a.ts - b.ts);
+  generatePlan();  // real weaknesses now drive the plan
+  touchStreak(); save(); checkBadges();
+}
+
+function renderOfficial() {
+  if (!S.profile) return renderOnboarding();
+  if (pendingImport) return renderImportPreview();
+
+  const list = (S.official || []).slice().sort((a, b) => a.ts - b.ts);
+  const scored = list.filter(r => r.total !== null);
+  const first = scored[0], last = scored[scored.length - 1];
+  const best = scored.reduce((m, r) => (!m || r.total > m.total ? r : m), null);
+  const per = officialDomainStats();
+  const anyRows = list.some(r => (r.rows || []).length);
+
+  main().innerHTML = `
+    <h1 class="page-title">Official score reports</h1>
+    <p class="page-sub">Import your real Bluebook results. They outrank Summit's own mocks everywhere — score prediction, weak-spot detection, and your study plan.</p>
+
+    ${scored.length >= 2 ? `
+      <div class="tiles">
+        <div class="tile brand"><div class="t-label">Latest official</div><div class="t-value">${last.total}</div><div class="t-note">${esc(last.label)}</div></div>
+        <div class="tile green"><div class="t-label">Change since first</div><div class="t-value">${last.total - first.total >= 0 ? "+" : ""}${last.total - first.total}</div><div class="t-note">from ${first.total} on ${fmtDate(first.date)}</div></div>
+        <div class="tile amber"><div class="t-label">Best</div><div class="t-value">${best.total}</div><div class="t-note">${fmtDate(best.date)}</div></div>
+        <div class="tile"><div class="t-label">Reports</div><div class="t-value">${list.length}</div><div class="t-note">to target ${S.profile.targetScore}: ${Math.max(0, S.profile.targetScore - last.total)}</div></div>
+      </div>` : ""}
+
+    ${scored.length >= 2 ? `<div class="card"><h3>Official score progress</h3>
+      <div class="chart-box">${officialTrendSvg(scored)}</div>
+      <div class="legend">
+        <span><span class="key" style="background:var(--brand)"></span>Total</span>
+        <span><span class="key" style="background:#8b5cf6"></span>Reading &amp; Writing (×2)</span>
+        <span><span class="key" style="background:var(--accent)"></span>Math (×2)</span>
+        <span><span class="key" style="background:var(--warn)"></span>Target</span>
+      </div></div>` : ""}
+
+    <div class="card">
+      <div class="spread"><h3>Import a score report</h3>
+        <button class="btn btn-ghost btn-sm" id="imp-help-toggle">Where do I get this? ▾</button></div>
+      <div id="imp-help" class="lesson" style="display:none">
+<b>From the Bluebook app or College Board online:</b>
+1. Open <b>My Practice</b> at satsuite.collegeboard.org/digital/scores (or the Scores tab in Bluebook).
+2. Pick the practice test, then open <b>Score Details</b> / <b>View Results</b>.
+3. Either <b>download the PDF</b> and upload it below, or select the whole results page (Ctrl/Cmd+A), copy, and paste it below.
+
+The question-by-question view — with each question's skill and whether you got it right — is what powers the per-skill analysis. Section scores alone still improve your prediction.</div>
+
+      <div class="field mt">
+        <label for="imp-text">Paste your score report</label>
+        <textarea id="imp-text" rows="8" style="width:100%;font:inherit;font-size:.9rem;padding:12px;border:1.5px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink)" placeholder="Paste the copied score report here — scores, and the question-by-question breakdown if you have it…"></textarea>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary" id="imp-parse">Analyze report →</button>
+        <label class="btn btn-ghost" style="cursor:pointer">📄 Upload file (.pdf .txt .csv .json)
+          <input id="imp-file" type="file" accept=".pdf,.txt,.csv,.tsv,.json" style="display:none"></label>
+        <button class="btn btn-ghost" id="imp-manual">⌨ Enter scores by hand</button>
+      </div>
+      <p class="small muted mt" style="margin-bottom:0">Everything is parsed on your device — nothing is uploaded anywhere. You'll confirm what we detected before it's saved.</p>
+    </div>
+
+    ${list.length ? `
+      <div class="card">
+        <h3>Per-domain accuracy from official tests ${anyRows ? "" : `<span class="chip gray">needs question details</span>`}</h3>
+        ${anyRows ? ALL_DOMAINS.map(d => {
+          const s = per[d.id];
+          const a = s && s.seen ? Math.round(s.correct / s.seen * 100) : null;
+          return `<div class="skill-row">
+            <span class="name">${d.icon} ${esc(d.name)}</span>
+            <div class="bar ${a === null ? "" : a >= 75 ? "green" : a >= 50 ? "amber" : "red"}"><i style="width:${a ?? 0}%"></i></div>
+            <span class="pct">${a === null ? "—" : a + "%"}</span>
+          </div>`;
+        }).join("") + `<p class="small muted mt">Measured on real test questions across ${list.length} report${list.length === 1 ? "" : "s"} — this is what your study plan now targets.</p>`
+        : `<p class="small muted">Import a report that includes the question-by-question breakdown to unlock per-skill analysis.</p>`}
+      </div>` : ""}
+
+    <div class="card">
+      <h3>Imported reports ${list.length ? `<span class="chip brand">${list.length}</span>` : ""}</h3>
+      ${list.length ? list.slice().reverse().map(r => {
+        const rows = r.rows || [];
+        const answered = rows.filter(x => !x.omitted).length;
+        const right = rows.filter(x => x.correct).length;
+        return `
+        <div class="review-item" data-off="${esc(r.id)}">
+          <div class="rv-head">
+            <span class="rv-mark good">${r.total ?? "—"}</span>
+            <b>${esc(r.label)}</b>
+            <span class="chip gray">${fmtDate(r.date)}</span>
+            ${r.rw !== null ? `<span class="chip brand">RW ${r.rw}</span>` : ""}
+            ${r.math !== null ? `<span class="chip brand">Math ${r.math}</span>` : ""}
+            ${rows.length ? `<span class="chip easy">${right}/${rows.length} correct</span>` : `<span class="chip gray">scores only</span>`}
+            <button class="btn btn-danger btn-sm off-del" data-id="${esc(r.id)}" style="margin-left:auto">Delete</button>
+          </div>
+          <div class="rv-body">
+            ${rows.length ? ALL_DOMAINS.map(d => {
+              const s = (r.perDomain || {})[d.id];
+              if (!s || !s.seen) return "";
+              const a = Math.round(s.correct / s.seen * 100);
+              return `<div class="skill-row">
+                <span class="name">${d.icon} ${esc(d.name)}</span>
+                <div class="bar ${a >= 75 ? "green" : a >= 50 ? "amber" : "red"}"><i style="width:${a}%"></i></div>
+                <span class="pct">${s.correct}/${s.seen}</span>
+              </div>`;
+            }).join("") + `<p class="small muted mt">${answered} answered · ${rows.length - answered} omitted</p>`
+            : `<p class="small muted">This report has section scores only.</p>`}
+          </div>
+        </div>`;
+      }).join("") : `<div class="empty"><div class="big-ico">🏛️</div>No official reports yet.<br><span class="small">Import your first Bluebook result above — it makes everything else more accurate.</span></div>`}
+    </div>`;
+
+  $("#imp-help-toggle").addEventListener("click", () => {
+    const h = $("#imp-help");
+    h.style.display = h.style.display === "none" ? "block" : "none";
+  });
+  $("#imp-parse").addEventListener("click", () => {
+    const t = $("#imp-text").value;
+    if (!t.trim()) { toast("Paste your score report first, or upload the file."); return; }
+    startImportPreview(parseScoreReport(t), "pasted text");
+  });
+  $("#imp-manual").addEventListener("click", () => {
+    startImportPreview({ label: null, date: todayKey(), total: null, rw: null, math: null, rows: [], perDomain: {}, warnings: [] }, "manual entry");
+  });
+  $("#imp-file").addEventListener("change", async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      if (/\.pdf$/i.test(f.name)) {
+        toast("Reading PDF…");
+        const text = await extractPdfText(await f.arrayBuffer());
+        if (!text || text.replace(/\s/g, "").length < 20) {
+          toast("Couldn't read text from that PDF — please copy/paste the report instead.");
+          return;
+        }
+        const parsed = parseScoreReport(text);
+        parsed.warnings.unshift("Text was extracted from a PDF, which can be imperfect. Check the values below carefully.");
+        startImportPreview(parsed, f.name);
+      } else {
+        const text = await f.text();
+        startImportPreview(parseScoreReport(text), f.name);
+      }
+    } catch (err) {
+      toast("Couldn't read that file — try pasting the report text instead.");
+    } finally { e.target.value = ""; }
+  });
+  document.querySelectorAll(".review-item .rv-head").forEach(h =>
+    h.addEventListener("click", e => {
+      if (e.target.closest(".off-del")) return;
+      h.parentElement.classList.toggle("open");
+    }));
+  document.querySelectorAll(".off-del").forEach(b => b.addEventListener("click", () => {
+    const rep = S.official.find(r => r.id === b.dataset.id);
+    if (!rep) return;
+    if (!confirm(`Delete "${rep.label}" (${rep.total ?? "no score"})? This can't be undone.`)) return;
+    S.official = S.official.filter(r => r.id !== b.dataset.id);
+    generatePlan(); save();
+    toast("Report deleted.");
+    renderOfficial();
+  }));
+}
+
+function startImportPreview(parsed, sourceName) {
+  pendingImport = parsed;
+  pendingImport.sourceName = sourceName;
+  renderImportPreview();
+}
+
+function renderImportPreview() {
+  const p = pendingImport;
+  const mapped = p.rows.filter(r => r.domain).length;
+  main().innerHTML = `
+    <h1 class="page-title">Confirm this report</h1>
+    <p class="page-sub">Read from ${esc(p.sourceName || "your report")}. Check anything that looks wrong before saving — you can edit every field.</p>
+
+    ${p.warnings && p.warnings.length ? p.warnings.map(w =>
+      `<div class="card mb" style="border-color:var(--warn)"><p class="small" style="margin:0">⚠️ ${esc(w)}</p></div>`).join("") : ""}
+
+    <div class="card">
+      <h3>Scores</h3>
+      <div class="form-grid">
+        <div class="field"><label for="pv-label">Test name</label>
+          <input id="pv-label" value="${esc(p.label || "Official score report")}" maxlength="60"></div>
+        <div class="field"><label for="pv-date">Date taken</label>
+          <input id="pv-date" type="date" value="${esc(p.date || todayKey())}"></div>
+        <div class="row">
+          <div class="field"><label for="pv-rw">Reading &amp; Writing (200–800)</label>
+            <input id="pv-rw" type="number" min="200" max="800" step="10" value="${p.rw ?? ""}"></div>
+          <div class="field"><label for="pv-math">Math (200–800)</label>
+            <input id="pv-math" type="number" min="200" max="800" step="10" value="${p.math ?? ""}"></div>
+        </div>
+        <div class="field"><label for="pv-total">Total (400–1600)</label>
+          <input id="pv-total" type="number" min="400" max="1600" step="10" value="${p.total ?? ""}">
+          <div class="hint" id="pv-total-hint"></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Question analysis</h3>
+      ${p.rows.length ? `
+        <p class="small muted mb">${p.rows.length} questions read · ${mapped} matched to a skill domain · ${p.rows.filter(r => r.correct).length} correct · ${p.rows.filter(r => r.omitted).length} omitted</p>
+        ${ALL_DOMAINS.map(d => {
+          const s = (p.perDomain || {})[d.id];
+          if (!s || !s.seen) return "";
+          const a = Math.round(s.correct / s.seen * 100);
+          return `<div class="skill-row">
+            <span class="name">${d.icon} ${esc(d.name)}</span>
+            <div class="bar ${a >= 75 ? "green" : a >= 50 ? "amber" : "red"}"><i style="width:${a}%"></i></div>
+            <span class="pct">${s.correct}/${s.seen}</span>
+          </div>`;
+        }).join("")}
+        <details style="margin-top:14px"><summary class="small muted" style="cursor:pointer">Show the skill labels we read (${p.rows.length})</summary>
+          <div class="lesson" style="max-height:260px;overflow:auto">${p.rows.map(r =>
+            `${r.n !== null ? "Q" + r.n + " · " : ""}${esc(r.skillRaw || "(no label)")} → ${r.domain ? esc(DOMAIN_BY_ID[r.domain].name) : "<b>unmatched</b>"} · ${r.omitted ? "omitted" : r.correct ? "correct" : "incorrect"}`).join("\n")}</div>
+        </details>`
+      : `<p class="small muted">No question-by-question data found. Section scores alone still sharpen your prediction; for per-skill targeting, paste the score-details view that lists each question's skill.</p>`}
+    </div>
+
+    <div class="card">
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-accent" id="pv-save">Save this report</button>
+        <button class="btn btn-ghost" id="pv-cancel">Cancel</button>
+      </div>
+    </div>`;
+
+  const sync = () => {
+    const rw = +$("#pv-rw").value || null, math = +$("#pv-math").value || null, total = +$("#pv-total").value || null;
+    const hint = $("#pv-total-hint");
+    if (rw && math) {
+      hint.textContent = total && total !== rw + math
+        ? `Heads up: ${rw} + ${math} = ${rw + math}, which doesn't match the total above.`
+        : `= ${rw} + ${math}`;
+    } else hint.textContent = "";
+  };
+  ["#pv-rw", "#pv-math", "#pv-total"].forEach(sel => $(sel).addEventListener("input", () => {
+    if (sel !== "#pv-total") {
+      const rw = +$("#pv-rw").value || 0, math = +$("#pv-math").value || 0;
+      if (rw && math) $("#pv-total").value = rw + math;
+    }
+    sync();
+  }));
+  sync();
+
+  $("#pv-cancel").addEventListener("click", () => { pendingImport = null; renderOfficial(); });
+  $("#pv-save").addEventListener("click", () => {
+    const rw = +$("#pv-rw").value || null, math = +$("#pv-math").value || null;
+    let total = +$("#pv-total").value || null;
+    if (total === null && rw !== null && math !== null) total = rw + math;
+    if (total === null && rw === null && math === null) {
+      toast("Enter at least one score before saving."); return;
+    }
+    saveOfficialReport({
+      label: $("#pv-label").value.trim() || "Official score report",
+      date: $("#pv-date").value || todayKey(),
+      total, rw, math, rows: p.rows, perDomain: p.perDomain,
+    });
+    // a JSON bundle may carry more than one report
+    if (p._multi && p._multi.length > 1) {
+      p._multi.slice(1).forEach(r => {
+        const parsed = finishParse({
+          label: r.label, date: r.date, total: r.total ?? null, rw: r.rw ?? null, math: r.math ?? null,
+          rows: (r.rows || []).map(normalizeRow), warnings: [],
+        });
+        saveOfficialReport(parsed);
+      });
+    }
+    pendingImport = null;
+    const weak = weakestDomains(1)[0];
+    toast(`Saved. Your plan now targets ${weak.name}.`);
+    renderOfficial();
+  });
+}
+
+function officialTrendSvg(list) {
+  return trendSvg(list.map(r => ({ ts: r.ts, total: r.total, rw: r.rw, math: r.math })));
+}
+
+/* ============================================================
    ANALYTICS
    ============================================================ */
 function renderAnalytics() {
   if (!S.profile) return renderOnboarding();
-  const per = statsByDomain();
+  const per = combinedDomainStats();
   const total = S.attempts.length;
   const correct = S.attempts.filter(a => a.correct).length;
   const acc = total ? Math.round(correct / total * 100) : 0;
   const pred = predictedScore();
+  const predSrc = predictionSource();
+  const points = allScorePoints();
+  const officialCount = (S.official || []).length;
 
   // pace stats
   const paceRow = (section) => {
@@ -1766,39 +2511,43 @@ function renderAnalytics() {
     <h1 class="page-title">Analytics</h1>
     <p class="page-sub">Where your points are — and where the next 50 are hiding.</p>
     <div class="tiles">
-      <div class="tile brand"><div class="t-label">Predicted score</div><div class="t-value">${pred ?? "—"}</div><div class="t-note">target ${S.profile.targetScore}</div></div>
+      <div class="tile brand"><div class="t-label">Predicted score</div><div class="t-value">${pred ?? "—"}</div>
+        <div class="t-note">${predSrc === "official" ? "🏛️ from your official report" : predSrc === "mock" ? "from your last mock" : predSrc === "practice" ? "rough — take a mock" : `target ${S.profile.targetScore}`}</div></div>
       <div class="tile"><div class="t-label">Questions answered</div><div class="t-value">${total}</div><div class="t-note">${correct} correct · ${acc}% accuracy</div></div>
-      <div class="tile amber"><div class="t-label">Mock exams</div><div class="t-value">${S.exams.length}</div><div class="t-note">${S.exams.length ? "last: " + S.exams[S.exams.length - 1].total : "3+ full-lengths ≈ +60 pts"}</div></div>
+      <div class="tile amber"><div class="t-label">Tests taken</div><div class="t-value">${S.exams.length + officialCount}</div><div class="t-note">${officialCount ? `${officialCount} official · ${S.exams.length} Summit` : S.exams.length ? "all Summit mocks" : "3+ full-lengths ≈ +60 pts"}</div></div>
       <div class="tile green"><div class="t-label">Review queue</div><div class="t-value">${S.reviewQueue.length}</div><div class="t-note">${dueReviews().length} due now</div></div>
     </div>
 
     <div class="card">
       <h3>Score trend</h3>
-      ${S.exams.length ? `<div class="chart-box">${scoreTrendSvg()}</div>
+      ${points.length ? `<div class="chart-box">${trendSvg(points)}</div>
         <div class="legend">
           <span><span class="key" style="background:var(--brand)"></span>Total</span>
           <span><span class="key" style="background:#8b5cf6"></span>Reading &amp; Writing (×2)</span>
           <span><span class="key" style="background:var(--accent)"></span>Math (×2)</span>
           <span><span class="key" style="background:var(--warn)"></span>Target</span>
+          <span>◆ official · ● Summit mock</span>
         </div>`
-      : `<div class="empty"><div class="big-ico">📈</div>Take your first mock exam to start your trend line.</div>`}
-      ${S.exams.length ? `<div class="mt">${S.exams.map((e, i) =>
+      : `<div class="empty"><div class="big-ico">📈</div>Take a mock exam or import an official score report to start your trend line.</div>`}
+      ${S.exams.length ? `<div class="mt"><p class="small muted" style="margin-bottom:4px">Review a Summit mock:</p>${S.exams.map((e, i) =>
         `<button class="btn btn-ghost btn-sm" data-x="${i}" style="margin:2px">${new Date(e.ts).toLocaleDateString()} · ${e.total} →</button>`).join("")}</div>` : ""}
+      ${officialCount ? `<p class="small muted mt"><a href="#" id="an-official">🏛️ ${officialCount} official report${officialCount === 1 ? "" : "s"} imported — manage them →</a></p>`
+        : `<p class="small muted mt"><a href="#" id="an-official">🏛️ Import an official Bluebook score report for a far more accurate picture →</a></p>`}
     </div>
 
     <div class="row">
       <div class="card">
         <h3>Accuracy by domain</h3>
         ${ALL_DOMAINS.map(d => {
-        const s = per[d.id] || { seen: 0, correct: 0 };
-        const a = s.seen ? Math.round(s.correct / s.seen * 100) : null;
+        const s = per[d.id] || {};
+        const a = (s.acc === null || s.acc === undefined) ? null : Math.round(s.acc * 100);
         return `<div class="skill-row">
-            <span class="name">${d.icon} ${esc(d.name)}</span>
+            <span class="name">${d.icon} ${esc(d.name)}${s.officialSeen ? ` <span class="chip easy" style="font-size:.68rem">🏛️ ${s.officialCorrect}/${s.officialSeen}</span>` : ""}</span>
             <div class="bar ${a === null ? "" : a >= 75 ? "green" : a >= 50 ? "amber" : "red"}"><i style="width:${a ?? 0}%"></i></div>
             <span class="pct">${a === null ? "—" : a + "%"}</span>
           </div>`;
       }).join("")}
-        <p class="small muted mt">The red bar with the most attempts is your highest-value target.</p>
+        <p class="small muted mt">The red bar with the most attempts is your highest-value target.${officialCount ? " Questions from official tests count double here, since they're the real thing." : ""}</p>
       </div>
       <div>
         <div class="card">
@@ -1838,6 +2587,7 @@ function renderAnalytics() {
     </div>`;
   document.querySelectorAll("[data-x]").forEach(b =>
     b.addEventListener("click", () => renderExamReview(+b.dataset.x)));
+  $("#an-official")?.addEventListener("click", e => { e.preventDefault(); show("official"); });
 }
 
 function topCauseAdvice(causes) {
@@ -1851,17 +2601,29 @@ function topCauseAdvice(causes) {
   }[top] || "";
 }
 
-function scoreTrendSvg() {
+/* Shared trend chart. points: [{ts, total, rw, math, official?}].
+   Section scores (200-800) are doubled so all three lines share one
+   400-1600 axis; official results are drawn as diamonds, Summit mocks
+   as circles. Missing values are skipped rather than plotted as zero. */
+function trendSvg(points) {
   const W = 640, H = 240, P = 36;
-  const exams = S.exams;
-  const n = exams.length;
+  const n = points.length;
+  if (!n) return "";
   const xs = i => n === 1 ? W / 2 : P + i * (W - 2 * P) / (n - 1);
   const yFor = v => H - P - ((v - 400) / 1200) * (H - 2 * P);
-  // section scores (200-800) are plotted doubled so all three lines share one 400-1600 axis
-  const line = (vals, color, dash = "") =>
-    `<polyline fill="none" stroke="${color}" stroke-width="2.5" ${dash ? `stroke-dasharray="${dash}"` : ""}
-      points="${vals.map((v, i) => `${xs(i)},${yFor(v)}`).join(" ")}"/>` +
-    vals.map((v, i) => `<circle cx="${xs(i)}" cy="${yFor(v)}" r="4" fill="${color}"/>`).join("");
+  const marker = (i, y, color) => points[i].official
+    ? `<rect x="${(xs(i) - 4.5).toFixed(1)}" y="${(y - 4.5).toFixed(1)}" width="9" height="9" fill="${color}" transform="rotate(45 ${xs(i).toFixed(1)} ${y.toFixed(1)})"/>`
+    : `<circle cx="${xs(i).toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="${color}"/>`;
+  const series = (key, mult, color, dash) => {
+    const pts = points
+      .map((p, i) => ({ i, v: (p[key] === null || p[key] === undefined) ? null : p[key] * mult }))
+      .filter(p => p.v !== null);
+    if (!pts.length) return "";
+    const poly = pts.length > 1
+      ? `<polyline fill="none" stroke="${color}" stroke-width="2.5" ${dash ? `stroke-dasharray="${dash}"` : ""} points="${pts.map(p => `${xs(p.i).toFixed(1)},${yFor(p.v).toFixed(1)}`).join(" ")}"/>`
+      : "";
+    return poly + pts.map(p => marker(p.i, yFor(p.v), color)).join("");
+  };
   const gridLines = [400, 800, 1200, 1600].map(v =>
     `<line x1="${P}" y1="${yFor(v)}" x2="${W - P}" y2="${yFor(v)}" stroke="var(--line)" stroke-width="1"/>
      <text x="${P - 6}" y="${yFor(v) + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${v}</text>`).join("");
@@ -1869,12 +2631,21 @@ function scoreTrendSvg() {
   const targetLine = `<line x1="${P}" y1="${yFor(target)}" x2="${W - P}" y2="${yFor(target)}" stroke="var(--warn)" stroke-width="1.5" stroke-dasharray="6 4"/>`;
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Score trend chart">
     ${gridLines}${targetLine}
-    ${line(exams.map(e => e.rw * 2), "#8b5cf6", "3 4")}
-    ${line(exams.map(e => e.math * 2), "#10b981", "3 4")}
-    ${line(exams.map(e => e.total), "#4f46e5")}
-    ${exams.map((e, i) => `<text x="${xs(i)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--muted)">${new Date(e.ts).toLocaleDateString(undefined, { month: "numeric", day: "numeric" })}</text>`).join("")}
+    ${series("rw", 2, "#8b5cf6", "3 4")}
+    ${series("math", 2, "#10b981", "3 4")}
+    ${series("total", 1, "#4f46e5", "")}
+    ${points.map((p, i) => `<text x="${xs(i).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--muted)">${new Date(p.ts).toLocaleDateString(undefined, { month: "numeric", day: "numeric" })}</text>`).join("")}
   </svg>`;
 }
+
+// every score on one timeline: Summit mocks plus imported official reports
+function allScorePoints() {
+  const mocks = S.exams.map(e => ({ ts: e.ts, total: e.total, rw: e.rw, math: e.math, official: false }));
+  const offs = (S.official || []).filter(r => r.total !== null || r.rw !== null || r.math !== null)
+    .map(r => ({ ts: r.ts, total: r.total, rw: r.rw, math: r.math, official: true }));
+  return mocks.concat(offs).sort((a, b) => a.ts - b.ts);
+}
+function scoreTrendSvg() { return trendSvg(allScorePoints()); }
 
 function streakStrip(days) {
   const set = new Set(S.streakDays);

@@ -153,6 +153,14 @@ const Tutor = (() => {
         "Practice them here in Math sets and mock exams — the entry box enforces the real rules."
     },
     {
+      keys: ["bluebook", "official score", "import", "upload", "score report", "real test", "practice test score"],
+      reply:
+        "Import your real Bluebook results — it's the single best thing you can do for accuracy here.\n\n" +
+        "Go to \"Official Scores\" in the sidebar, then either paste the report text or upload the PDF. Get it from My Practice at satsuite.collegeboard.org/digital/scores, or the Scores tab in Bluebook — open Score Details and copy the whole page.\n\n" +
+        "Why it matters: a real College Board test is a far better measure than any practice question bank. Once imported, your official result takes over your predicted score, and every question in it counts double when I work out your weakest domains and rebuild your study plan.\n\n" +
+        "Import as many as you like — each one is kept, so you can watch your real scores climb over time."
+    },
+    {
       keys: ["review queue", "spaced", "repetition", "why is this question back", "queue"],
       reply:
         "The review queue is spaced repetition — the most evidence-backed study technique there is.\n\n" +
@@ -280,17 +288,29 @@ const Tutor = (() => {
     const per = {};
     (state.attempts || []).forEach(a => {
       const q = Q_BY_ID[a.qid]; if (!q) return;
-      per[q.domain] = per[q.domain] || { seen: 0, correct: 0 };
+      per[q.domain] = per[q.domain] || { seen: 0, correct: 0, official: 0 };
       per[q.domain].seen++; if (a.correct) per[q.domain].correct++;
     });
+    // real College Board results count too, and count for more
+    (state.official || []).forEach(rep => {
+      Object.entries(rep.perDomain || {}).forEach(([d, v]) => {
+        per[d] = per[d] || { seen: 0, correct: 0, official: 0 };
+        per[d].seen += v.seen * 2;
+        per[d].correct += v.correct * 2;
+        per[d].official += v.seen;
+      });
+    });
     const rows = Object.entries(per).filter(([, v]) => v.seen >= 2)
-      .map(([d, v]) => ({ d, acc: v.correct / v.seen, seen: v.seen }))
+      .map(([d, v]) => ({ d, acc: v.correct / v.seen, seen: v.seen, official: v.official }))
       .sort((a, b) => a.acc - b.acc);
     if (!rows.length) {
-      return "I don't have enough data yet. Do a 10-question mixed practice set (Practice → Mixed) and I'll tell you exactly where your points are hiding.";
+      return "I don't have enough data yet. Do a 10-question mixed practice set (Practice → Mixed), or import an official Bluebook score report under Official Scores — then I can tell you exactly where your points are hiding.";
     }
     const w = rows[0], dom = DOMAIN_BY_ID[w.d];
-    return `Based on your history, your weakest area is ${dom.icon} ${dom.name} — ${Math.round(w.acc * 100)}% accuracy over ${w.seen} questions.\n\nThat's where the cheapest points live. Go to Practice, select that domain, and do a focused 5-question set. I'll hint you through anything that fights back.`;
+    const src = w.official
+      ? `\n\nThis includes ${w.official} question${w.official === 1 ? "" : "s"} from your real College Board test${w.official === 1 ? "" : "s"}, which I weight double — that's the most trustworthy signal you have.`
+      : "";
+    return `Based on your history, your weakest area is ${dom.icon} ${dom.name} — about ${Math.round(w.acc * 100)}% accuracy.${src}\n\nThat's where the cheapest points live. Go to Practice, select that domain, and do a focused 5-question set. I'll hint you through anything that fights back.`;
   }
 
   return { respond, setContext, clearContext, nextHint };
