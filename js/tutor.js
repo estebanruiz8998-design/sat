@@ -248,9 +248,12 @@ const Tutor = (() => {
     let out = `Let's rework your last miss (${dom.name} → ${q.skill}):\n\n`;
     if (q.passage) out += `“${q.passage.length > 220 ? q.passage.slice(0, 220) + "…" : q.passage}”\n\n`;
     out += `Q: ${q.stem}\n\n`;
+    if (q.type === "spr") out += `(Fill-in — no answer choices.)\n\n`;
     out += `Step-by-step:\n`;
     q.hints.forEach((h, i) => { out += `${i + 1}. ${h}\n`; });
-    out += `\n✅ Answer: ${q.choices[q.answer]}\n\n${q.explanation}`;
+    // fill-ins store the answer itself; multiple-choice stores an index
+    const answerText = q.type === "spr" ? q.answer : q.choices[q.answer];
+    out += `\n✅ Answer: ${answerText}\n\n${q.explanation}`;
     return out;
   }
 
