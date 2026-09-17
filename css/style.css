@@ -609,6 +609,29 @@ img { max-width: 100%; }
 .break-screen { text-align: center; padding: 70px 20px; }
 .break-screen .big-t { font-size: 3rem; font-variant-numeric: tabular-nums; font-weight: 800; color: var(--brand); }
 
+/* ---------- video links ---------- */
+.watch-link {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: .78rem; font-weight: 600; white-space: nowrap;
+  padding: 4px 11px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: #c4302b;
+  text-decoration: none !important; flex-shrink: 0;
+}
+.watch-link:hover { border-color: #c4302b; background: var(--danger-soft); }
+.video-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.video-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); font-size: .88rem;
+  text-decoration: none !important; color: var(--ink);
+}
+.video-item:hover { border-color: #c4302b; }
+.video-item .v-play { color: #c4302b; font-size: 1.05rem; flex-shrink: 0; }
+.video-item .v-meta { flex: 1; min-width: 0; }
+.video-item .v-meta b { display: block; font-size: .9rem; font-weight: 600; }
+.video-item .v-meta span { color: var(--muted); font-size: .78rem; }
+.video-note { font-size: .78rem; color: var(--muted); margin-top: 8px; }
+
 /* lesson content */
 .lesson {
   background: var(--bg); border: 1px solid var(--line); border-radius: 10px;

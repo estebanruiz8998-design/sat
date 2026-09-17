@@ -222,6 +222,44 @@ const Tutor = (() => {
     },
   ];
 
+  /* Links a knowledge entry to a video topic, keyed off one of its
+     trigger words. Queries live in videos.js so there's one source. */
+  const VIDEO_TOPICS = [
+    { match: "comma", key: "conv|Punctuation & Boundaries" },
+    { match: "transition", key: "expr|Transitions" },
+    { match: "words in context", key: "craft|Words in Context" },
+    { match: "main idea", key: "info|Central Ideas" },
+    { match: "evidence", key: "info|Evidence & Support" },
+    { match: "inference", key: "info|Inferences" },
+    { match: "system", key: "alg|Systems of Equations" },
+    { match: "linear", key: "alg|Linear Functions & Graphs" },
+    { match: "quadratic", key: "adv|Quadratics" },
+    { match: "exponent", key: "adv|Exponents & Radicals" },
+    { match: "ratio", key: "data|Ratios & Percentages" },
+    { match: "probability", key: "data|Statistics & Probability" },
+    { match: "circle", key: "geo|Circles & Area" },
+    { match: "trig", key: "geo|Right-Triangle Trig" },
+  ];
+  const VIDEO_GENERAL = [
+    { match: "timing", topic: "pacing" },
+    { match: "calculator", topic: "desmos" },
+    { match: "fill-in", topic: "spr" },
+  ];
+  function videoLinkFor(entry) {
+    if (typeof SKILL_VIDEOS === "undefined" || typeof ytSearchUrl === "undefined") return null;
+    for (const t of VIDEO_TOPICS) {
+      if (entry.keys.some(k => k.includes(t.match)) && SKILL_VIDEOS[t.key]) {
+        return ytSearchUrl(SKILL_VIDEOS[t.key].query);
+      }
+    }
+    for (const t of VIDEO_GENERAL) {
+      if (entry.keys.some(k => k.includes(t.match)) && typeof TOPIC_VIDEOS !== "undefined" && TOPIC_VIDEOS[t.topic]) {
+        return ytSearchUrl(TOPIC_VIDEOS[t.topic].query);
+      }
+    }
+    return null;
+  }
+
   function setContext(qid) { context = { qid, hintIndex: 0 }; }
   function clearContext() { context = null; }
 
@@ -277,7 +315,10 @@ const Tutor = (() => {
       const s = k.keys.reduce((acc, key) => acc + (text.includes(key) ? key.length : 0), 0);
       if (s > bestScore) { bestScore = s; best = k; }
     }
-    if (best) return best.reply;
+    if (best) {
+      const link = videoLinkFor(best);
+      return link ? `${best.reply}\n\n▶ Prefer to see it explained? ${link}` : best.reply;
+    }
 
     return "Good question! I'm strongest on specific topics — try asking about:\n\n" +
       "• Grammar: commas, semicolons, transitions, subject-verb agreement\n" +

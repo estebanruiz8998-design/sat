@@ -1362,12 +1362,15 @@ function submitPractice(payload) {
   }
 
   const rightAnswerLabel = q.type === "spr" ? esc(q.answer) : "ABCD"[answerPos];
+  const vid = videosForSkill(q.domain, q.skill);
   const causeUi = correct ? "" : `
     <div class="cause-tags" id="cause-tags">
       <span class="small muted" style="align-self:center">Why the miss?</span>
       ${["Didn't know it", "Careless slip", "Misread it", "Too slow", "Guessed"].map(c =>
         `<button data-c="${esc(c)}">${esc(c)}</button>`).join("")}
-    </div>`;
+    </div>
+    ${vid ? `<p class="video-note">Prefer to see it explained?
+      <a class="watch-link" href="${esc(vid.url)}" target="_blank" rel="noopener">▶ ${esc(q.skill)} videos</a></p>` : ""}`;
   $("#feedback").innerHTML = `
     <div class="explain ${correct ? "" : "bad"}">
       <b>${correct ? `✅ Correct! +${10 * q.diff} XP${secs > BENCH[q.section] * 1.6 ? " · right but slow — worth a re-drill" : ""}`
@@ -1989,10 +1992,15 @@ function renderModules() {
           ${d.skills.map(sk => {
       const st = skillStats[d.id + "|" + sk] || { seen: 0, correct: 0 };
       const sa = st.seen ? Math.round(st.correct / st.seen * 100) : null;
+      const vid = videosForSkill(d.id, sk);
       return `<div class="subtopic"><span>• ${esc(sk)}</span>
-              <span class="st-stat">${sa === null ? "no attempts yet" : `${sa}% · ${st.seen} attempts`}</span></div>`;
+              <span style="display:flex;align-items:center;gap:10px">
+                <span class="st-stat">${sa === null ? "no attempts yet" : `${sa}% · ${st.seen} attempts`}</span>
+                ${vid ? `<a class="watch-link" href="${esc(vid.url)}" target="_blank" rel="noopener" title="Find short video explainers for ${esc(sk)}">▶ Watch</a>` : ""}
+              </span></div>`;
     }).join("")}
           ${lesson ? `<div class="lesson">${lesson}</div>` : ""}
+          ${videoPicksBlock(d.id)}
           <div style="margin-top:12px;display:flex;gap:8px">
             <button class="btn btn-primary btn-sm drill" data-dom="${d.id}">Drill this domain →</button>
           </div>
@@ -2013,6 +2021,21 @@ function renderModules() {
   document.querySelectorAll(".drill").forEach(b => b.addEventListener("click", () => {
     startPractice({ section: domainSection(b.dataset.dom), domain: b.dataset.dom, count: 5 });
   }));
+}
+
+/* Hand-picked videos for a domain, when we have verified any.
+   Skill "Watch" links always work regardless, so this block is a bonus. */
+function videoPicksBlock(domainId) {
+  const withPicks = videosForDomain(domainId).filter(v => (v.picks || []).length);
+  if (!withPicks.length) return "";
+  return `<div class="video-list">
+    ${withPicks.flatMap(v => v.picks.map(p => `
+      <a class="video-item" href="${esc(p.url)}" target="_blank" rel="noopener">
+        <span class="v-play">▶</span>
+        <span class="v-meta"><b>${esc(p.title)}</b><span>${esc(p.channel)} · ${esc(v.skill)}</span></span>
+      </a>`)).join("")}
+  </div>
+  <p class="video-note">Videos open on YouTube in a new tab. The ▶ Watch links above always show current results for each skill.</p>`;
 }
 
 /* Strategy lessons per domain (original content) */
@@ -2114,12 +2137,22 @@ function renderTutor() {
   document.querySelectorAll(".chat-suggest button").forEach(b =>
     b.addEventListener("click", () => tutorSend(b.dataset.q)));
 }
+/* Turns URLs into links. Runs AFTER esc(), so message text can never
+   inject markup — only the URL shapes we match here become anchors. */
+function linkify(escapedText) {
+  return escapedText.replace(/https?:\/\/[^\s<>"']+/g, u => {
+    const clean = u.replace(/[.,;:)]+$/, "");       // don't swallow trailing punctuation
+    const trail = u.slice(clean.length);
+    return `<a href="${clean}" target="_blank" rel="noopener">${clean}</a>${trail}`;
+  });
+}
+
 function drawChat() {
   const log = $("#chat-log");
   if (!log) return;
   log.innerHTML = S.chat.map(m => m.who === "user"
     ? `<div class="msg user">${esc(m.text)}</div>`
-    : `<div class="msg bot"><div class="msg-name">Professor Peak</div>${esc(m.text)}</div>`).join("");
+    : `<div class="msg bot"><div class="msg-name">Professor Peak</div>${linkify(esc(m.text))}</div>`).join("");
   log.scrollTop = log.scrollHeight;
 }
 function tutorSend(preset) {
@@ -2179,6 +2212,25 @@ function renderGuide() {
         <textarea id="worry-box" rows="5" style="width:100%;font:inherit;padding:12px;border:1.5px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink)" placeholder="Set a 7-minute timer and write whatever is on your mind about the test…"></textarea>
       </div>
       <button class="btn btn-ghost mt" id="worry-clear">Done — clear it 🗑</button>
+    </div>
+
+    <div class="card">
+      <h3>📺 Learn it visually</h3>
+      <p class="small muted mb">Every skill in Modules has a ▶ Watch link that opens current video explainers for that exact topic. These cover the broader ground:</p>
+      <div class="video-list">
+        ${Object.values(TOPIC_VIDEOS).map(t => `
+          <a class="video-item" href="${esc(ytSearchUrl(t.query))}" target="_blank" rel="noopener">
+            <span class="v-play">▶</span>
+            <span class="v-meta"><b>${esc(t.label)}</b><span>opens YouTube results for “${esc(t.query)}”</span></span>
+          </a>`).join("")}
+      </div>
+      ${VIDEO_CHANNELS.length ? `<p class="small muted mt" style="margin-bottom:6px">Channels worth subscribing to:</p>
+        <div class="video-list">${VIDEO_CHANNELS.map(c => `
+          <a class="video-item" href="${esc(c.url)}" target="_blank" rel="noopener">
+            <span class="v-play">▶</span>
+            <span class="v-meta"><b>${esc(c.name)}</b><span>${esc(c.why)}</span></span>
+          </a>`).join("")}</div>` : ""}
+      <p class="video-note">Watch links open YouTube search results rather than one fixed video, so they always surface current, working explainers instead of going dead over time.</p>
     </div>
 
     <div class="card">
