@@ -51,11 +51,13 @@ function esc(s) {
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
   ));
 }
+// LOCAL calendar date (not UTC): streaks and review due-dates must
+// roll over at the student's midnight, not at UTC midnight
 function todayKey(d = new Date()) {
-  return d.toISOString().slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function addDays(key, n) {
-  const d = new Date(key + "T00:00:00");
+  const d = new Date(key + "T00:00:00"); // local midnight
   d.setDate(d.getDate() + n);
   return todayKey(d);
 }
@@ -273,7 +275,7 @@ function show(view, arg) {
 document.querySelectorAll(".side-link").forEach(b =>
   b.addEventListener("click", () => {
     if (quiz && quiz.mode === "exam" && !confirm("Leave the exam? This module's progress will be lost.")) return;
-    stopTimer(); quiz = null;
+    stopTimer(); quiz = null; Tutor.clearContext();
     show(b.dataset.view);
   }));
 
@@ -544,8 +546,9 @@ function normNum(s) {
   return isNaN(n) ? null : n;
 }
 /* Official Digital SAT SPR grading: exact fraction/number matches count,
-   and a long decimal counts when it fills the entry space, truncated OR
-   rounded (e.g. for 2/3: .6666, .6667, 0.666, 0.667 — but not .67). */
+   and a long decimal counts when it fills the entry space and equals the
+   true value TRUNCATED or ROUNDED at that precision (for 2/3: .6666,
+   .6667, 0.666, 0.667 — but not .67, and not .6668). */
 function sprCorrect(q, entry) {
   entry = String(entry ?? "").trim();
   const v = normNum(entry);
@@ -558,7 +561,10 @@ function sprCorrect(q, entry) {
     if (av === null) return false;
     if (Math.abs(av - v) < 1e-9) return true;                       // exact
     if (entry.includes(".") && atCapacity && decimals > 0) {
-      return Math.abs(av - v) < Math.pow(10, -decimals);            // filled-space truncation/rounding
+      const p = Math.pow(10, decimals);
+      const truncated = Math.trunc(av * p) / p;
+      const rounded = Math.round(av * p) / p;
+      return Math.abs(v - truncated) < 1e-9 || Math.abs(v - rounded) < 1e-9;
     }
     return false;
   });
@@ -658,12 +664,25 @@ function renderPracticeSetup() {
     }));
   };
   seg("#pr-section"); seg("#pr-count"); seg("#pr-timing");
+  // keep the two pickers consistent: a section choice resets the domain,
+  // and a domain choice snaps the section toggle to that domain's section
+  $("#pr-section").querySelectorAll("button").forEach(b =>
+    b.addEventListener("click", () => { $("#pr-domain").value = "any"; }));
+  $("#pr-domain").addEventListener("change", () => {
+    const dom = $("#pr-domain").value;
+    if (dom === "any") return;
+    const sec = domainSection(dom);
+    $("#pr-section").querySelectorAll("button").forEach(x =>
+      x.classList.toggle("on", x.dataset.v === sec));
+  });
   $("#pr-review")?.addEventListener("click", () => startPractice({ review: true }));
   $("#pr-start").addEventListener("click", () => {
     S.prefs.timing = $("#pr-timing .on").dataset.v; save();
+    const domain = $("#pr-domain").value;
     startPractice({
-      section: $("#pr-section .on").dataset.v,
-      domain: $("#pr-domain").value,
+      // a specific domain always implies its own section
+      section: domain === "any" ? $("#pr-section .on").dataset.v : domainSection(domain),
+      domain,
       count: +$("#pr-count .on").dataset.v,
     });
   });
@@ -841,6 +860,8 @@ function wireQuestionUI({ onSubmit, onNext }) {
       if (e.key === "Enter") { e.preventDefault(); $("#q-next")?.click(); }
       return;
     }
+    // a focused button owns its own Enter — let native activation run
+    if (e.key === "Enter" && e.target.closest("button")) return;
     if (e.key >= "1" && e.key <= "4" && q.type !== "spr" && !quiz.answered) {
       document.querySelectorAll(".choice")[+e.key - 1]?.click();
     } else if (e.key === "Enter") {
@@ -927,7 +948,7 @@ function finishPractice(early = false) {
   stopTimer(); Tutor.clearContext();
   closeCalc();
   const answeredCount = quiz.asked.length - (quiz.answered ? 0 : 1);
-  if (answeredCount === 0) { quiz = null; return show("practice"); }
+  if (answeredCount <= 0) { quiz = null; toast("No questions matched that setup."); return show("practice"); }
   const total = answeredCount;
   const correct = quiz.correct;
   const pct = Math.round(correct / total * 100);
@@ -1067,6 +1088,7 @@ function loadExamModule() {
 }
 
 function renderModuleIntro() {
+  quiz.keyHandler = null; // no question on screen — retire the stale handler
   const sec = quiz.plan.sections[quiz.stage];
   const hardNote = quiz.module === 2
     ? (quiz.hardM2[sec.section]
@@ -1089,8 +1111,11 @@ function renderModuleIntro() {
 
 function startModuleTimer() {
   stopTimer();
+  // wall-clock based: setInterval is throttled in background tabs, so the
+  // remaining time is always recomputed from a fixed deadline
+  quiz.moduleEndsAt = Date.now() + quiz.secondsLeft * 1000;
   timerH = setInterval(() => {
-    quiz.secondsLeft--;
+    quiz.secondsLeft = Math.round((quiz.moduleEndsAt - Date.now()) / 1000);
     const el = $("#timer");
     if (el) {
       el.textContent = fmtClock(Math.max(0, quiz.secondsLeft));
@@ -1180,7 +1205,13 @@ function renderExamQuestion() {
       const v = inp.value.trim();
       inp.classList.remove("bad");
       const pv = $("#spr-prev"); if (pv) pv.textContent = sprPreview(v);
-      if (v && !validSprEntry(v)) { inp.classList.add("bad"); return; }
+      if (v && !validSprEntry(v)) {
+        // an invalid edit must not leave a previously stored answer behind
+        inp.classList.add("bad");
+        delete quiz.answers[q.id];
+        refreshDots();
+        return;
+      }
       if (v) quiz.answers[q.id] = v; else delete quiz.answers[q.id];
       refreshDots();
     });
@@ -1231,6 +1262,8 @@ function renderExamQuestion() {
 
   quiz.keyHandler = (e) => {
     if (e.target.matches("input,textarea,select")) return;
+    // a focused button owns its own Enter — let native activation run
+    if (e.key === "Enter" && e.target.closest("button")) return;
     if (e.key >= "1" && e.key <= "4" && q.type !== "spr") {
       document.querySelectorAll(".choice")[+e.key - 1]?.click();
     } else if (e.key === "Enter") {
@@ -1298,18 +1331,19 @@ function submitModule() {
 }
 
 function renderBreak() {
-  let remaining = quiz.plan.breakSec;
+  quiz.keyHandler = null; // no question on screen — retire the stale handler
+  const endsAt = Date.now() + quiz.plan.breakSec * 1000;
   main().innerHTML = `
     <div class="card break-screen" style="max-width:520px;margin:60px auto">
       <div style="font-size:2.4rem">☕</div>
       <h2 style="margin:10px 0 4px">Break time</h2>
       <p class="muted small">Stand up, stretch, water. On the real test this break is 10 minutes — don't study during it.</p>
-      <div class="big-t" id="break-t">${fmtClock(remaining)}</div>
+      <div class="big-t" id="break-t">${fmtClock(quiz.plan.breakSec)}</div>
       <button class="btn btn-primary mt" id="break-skip">Start ${esc(quiz.plan.sections[quiz.stage].name)} →</button>
     </div>`;
   stopTimer();
   timerH = setInterval(() => {
-    remaining--;
+    const remaining = Math.round((endsAt - Date.now()) / 1000);
     const el = $("#break-t");
     if (el) el.textContent = fmtClock(Math.max(0, remaining));
     if (remaining <= 0) { stopTimer(); loadExamModule(); }
@@ -1567,8 +1601,10 @@ function renderPlan() {
           <div class="task ${t.done ? "done" : ""}">
             <input type="checkbox" ${t.done ? "checked" : ""} data-w="${wi}" data-t="${esc(t.id)}">
             <span class="t-text">${esc(t.text)}</span>
-            ${{ practice: "practice", exam: "exam", module: "modules", tutor: "tutor", review: "review", guide: "guide" }[t.type]
-      ? `<button class="btn btn-ghost btn-sm go-task" data-kind="${t.type}">Go</button>` : ""}
+            ${(() => {
+        const view = { practice: "practice", exam: "exam", module: "modules", tutor: "tutor", review: "review", guide: "guide" }[t.type];
+        return view ? `<button class="btn btn-ghost btn-sm go-task" data-kind="${view}">Go</button>` : "";
+      })()}
           </div>`).join("")}
       </div>`).join("")}`;
 
@@ -1580,10 +1616,9 @@ function renderPlan() {
     if (t) { t.done = e.target.checked; touchStreak(); save(); checkBadges(); renderPlan(); }
   }));
   document.querySelectorAll(".go-task").forEach(b => b.addEventListener("click", () => {
-    const k = b.dataset.kind;
+    const k = b.dataset.kind; // already a view name
     if (k === "review") startPractice({ review: true });
-    else if (k === "practice") show("practice");
-    else show(k === "modules" ? "modules" : k);
+    else show(k);
   }));
 }
 
@@ -1931,6 +1966,8 @@ function renderSettings() {
       localStorage.removeItem(STORE_KEY);
       try { localStorage.removeItem("summit_theme"); } catch (e) { }
       S = DEFAULT_STATE();
+      applyTheme("auto");
+      renderSideStats();
       show("dashboard");
       toast("Fresh start. Let's climb.");
     }
